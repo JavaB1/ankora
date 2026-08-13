@@ -41,7 +41,7 @@ Drop `SKILL.md` into your project (or `.claude/skills/`). It tells the agent to 
 
 ## What it does NOT do (on purpose)
 
-This is deliberately small. It does **not** do embeddings/semantic search, a graph, auto-consolidation, conflict detection, or ranking beyond keyword frequency. If two notes disagree, both stay — you resolve it. If you outgrow keyword recall, that's the point where a heavier memory layer earns its keep; Ankora is the small version that covers most of the value first.
+This is deliberately small. It does **not** do embeddings/semantic search, a graph, auto-consolidation, conflict detection, or ranking beyond keyword frequency. If two notes disagree, both stay — you resolve it. If you outgrow keyword recall, that's when a full memory framework is worth the extra setup. Ankora is the small version that covers most of the value first, with nothing to install.
 
 ## License
 

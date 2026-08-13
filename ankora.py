@@ -24,6 +24,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+__version__ = "0.1.0"
+
 TYPES = ("fact", "decision", "insight", "note")
 
 # Weights: a hit in the title matters most, then tags, then body.
@@ -154,6 +156,7 @@ def _print_hits(hits: list[dict], query: str) -> None:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="ankora", description=__doc__.splitlines()[1])
+    p.add_argument("-V", "--version", action="version", version=f"ankora {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("save", help="save an anchor")
