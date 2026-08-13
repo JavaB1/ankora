@@ -24,11 +24,12 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 TYPES = ("fact", "decision", "insight", "note")
 
@@ -69,14 +70,21 @@ def _tokens(text: str) -> list[str]:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """Write text so a reader always sees the complete old or complete new file."""
+    """Write text so a reader always sees the complete old or complete new file.
+    Uses a random, exclusively-created temp file (mkstemp) so a pre-planted link
+    at a predictable temp name cannot be used to write outside the store."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / (path.name + f".tmp.{os.getpid()}")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)            # atomic; replaces the dir entry, not a hardlink target
+    fd, tmpname = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmpname, path)     # atomic; replaces the dir entry, not a hardlink target
+        tmpname = None
+    finally:
+        if tmpname is not None and os.path.exists(tmpname):
+            os.unlink(tmpname)        # never leave a temp file behind on failure
     try:
         dfd = os.open(str(path.parent), os.O_RDONLY)
         try:
@@ -208,8 +216,8 @@ def save(title: str, type_: str, tags: list[str], body: str) -> Path:
     title = title if title is not None else ""
     if not title.strip():
         raise ValueError("title must not be empty")
-    if any(("\n" in x or "\r" in x) for x in [title, *tags]):
-        raise ValueError("title and tags must not contain newlines")
+    if any(("\n" in x or "\r" in x) for x in [title, type_, *tags]):
+        raise ValueError("title, type and tags must not contain newlines")
     _anchors_dir().mkdir(parents=True, exist_ok=True)
     with _Lock(_root() / ".lock"):
         name = _slug(title)

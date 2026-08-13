@@ -2,6 +2,16 @@
 
 All notable changes to Ankora. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.1.2] — 2026-08-13
+
+Second hardening pass — self-audit by fault-injection and concurrency execution after the external audit.
+
+- Reject newlines in the `type` field too (not only title/tags) — closes a frontmatter-injection path through the Python API's `type_` argument.
+- Atomic writes now use a random, exclusively-created temp file (`mkstemp`) instead of a predictable name, so a pre-planted link at the temp path can't be used to write outside the store; temp files are always removed on failure.
+- Added tests for type-field injection and interrupted-write atomicity (the complete old file survives, no temp litter); concurrency, Windows reserved-name/unicode, and hardlink-at-destination surfaces re-verified by execution.
+
+Known: index rebuild is still O(n) per save; titles with no ASCII letters collapse to a generic slug namespace (suffix-protected, so no loss). Both are slated for a later release.
+
 ## [0.1.1] — 2026-08-13
 
 Hardening release after an external adversarial audit. No API changes.

@@ -95,6 +95,27 @@ class AnkoraTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ankora.save("   ", "note", [], "body")
 
+    def test_type_with_newline_rejected(self):
+        # type_ is a frontmatter value too — a newline must not inject a title (audit re-pass)
+        with self.assertRaises(ValueError):
+            ankora.save("Victim", "note\ntitle: Attacker", [], "A")
+
+    def test_interrupted_write_preserves_original_and_leaves_no_temp(self):
+        p = ankora.save("Durable", "note", [], "ORIGINAL")
+
+        def boom(src, dst):
+            raise OSError("simulated crash during replace")
+
+        orig = ankora.os.replace
+        ankora.os.replace = boom
+        try:
+            with self.assertRaises(OSError):
+                ankora.save("Durable", "note", [], "NEWDATA")
+        finally:
+            ankora.os.replace = orig
+        self.assertIn("ORIGINAL", p.read_text(encoding="utf-8"))          # complete old survives
+        self.assertEqual(list((Path(self.dir) / "anchors").glob("*.tmp*")), [])  # no temp litter
+
     # --- malformed store tolerance (audit #4) ---
     def test_malformed_file_is_skipped_not_phantom(self):
         (Path(self.dir) / "anchors").mkdir(parents=True, exist_ok=True)
