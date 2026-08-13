@@ -1,0 +1,6 @@
+# Your own memory lives here — never commit it to the engine repo.
+.ankora/
+
+# Python
+__pycache__/
+*.pyc
