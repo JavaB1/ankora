@@ -39,6 +39,22 @@ class AnkoraTest(unittest.TestCase):
         ankora.save("Anything", "note", [], "some body")
         self.assertEqual(ankora.recall("zzznomatch"), [])
 
+    def test_save_upserts_same_title_but_never_clobbers_a_different_one(self):
+        # Same title twice = update in place (upsert), not a duplicate.
+        ankora.save("Same Title", "note", [], "first body")
+        ankora.save("Same Title", "note", [], "second body")
+        files = list((Path(self.tmp) / "anchors").glob("*.md"))
+        self.assertEqual(len(files), 1)
+        self.assertIn("second body", files[0].read_text(encoding="utf-8"))
+        # Two DIFFERENT titles that slug to the same name must not clobber.
+        ankora.save("auth v1", "note", [], "AAA")
+        ankora.save("Auth: V1", "note", [], "BBB")  # slugs to 'auth-v1' too
+        bodies = "".join(
+            p.read_text(encoding="utf-8") for p in (Path(self.tmp) / "anchors").glob("auth-v1*.md")
+        )
+        self.assertIn("AAA", bodies)
+        self.assertIn("BBB", bodies)
+
     def test_recall_respects_limit(self):
         for i in range(4):
             ankora.save(f"Note about cache {i}", "note", ["cache"], "cache detail")

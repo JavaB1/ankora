@@ -77,10 +77,23 @@ def _all() -> list[dict]:
     return [_parse(p) for p in sorted(d.glob("*.md"))]
 
 
+def _resolve_path(name: str, title: str) -> Path:
+    """Pick the file for this anchor. Reuse the file if a same-title anchor
+    already exists (save is an upsert keyed on the title); otherwise avoid
+    clobbering a different anchor that slugs to the same name by suffixing."""
+    d = _anchors_dir()
+    i = 1
+    while True:
+        candidate = d / (f"{name}.md" if i == 1 else f"{name}-{i}.md")
+        if not candidate.exists() or _parse(candidate)["title"] == title:
+            return candidate
+        i += 1
+
+
 def save(title: str, type_: str, tags: list[str], body: str) -> Path:
     _anchors_dir().mkdir(parents=True, exist_ok=True)
     name = _slug(title)
-    path = _anchors_dir() / f"{name}.md"
+    path = _resolve_path(name, title)
     front = [
         f"name: {name}",
         f"title: {title}",
@@ -112,10 +125,11 @@ def recall(query: str, limit: int = 5) -> list[dict]:
 
 def rebuild_index() -> Path:
     anchors = _all()
+    n = len(anchors)
     lines = [
         "# Ankora index",
         "",
-        f"{len(anchors)} anchors. Recall the full note with: "
+        f"{n} anchor{'s' if n != 1 else ''}. Recall the full note with: "
         f'`python ankora.py recall "<query>"`',
         "",
     ]
