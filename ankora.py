@@ -2,37 +2,45 @@
 """
 Ankora - tiny persistent memory for coding agents.
 
-Save atomic notes ("anchors") as plain markdown; recall the relevant ones
-when you start a new session, so the agent continues instead of forgetting
-what you already worked out.
+Save atomic notes ("anchors") as plain markdown; recall the relevant ones when
+you start a new session, so the agent continues instead of forgetting what you
+already worked out.
 
 Zero dependencies: Python 3.8+ standard library only. Nothing to build.
 
-    python ankora.py save "Use UUID v7 for ids" -t decision -g db,ids -m "time-ordered, index-friendly"
+    python ankora.py save "Use UUID v7 for ids" -t decision -g db,ids -m "time-ordered"
     python ankora.py recall "uuid ids"
     python ankora.py index      # rebuild INDEX.md
     python ankora.py list
 
 Storage lives in ./.ankora/ by default (override with the ANKORA_DIR env var).
+Writes are atomic and guarded by a cross-process lock, so a crash or two
+concurrent saves never silently lose an anchor.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 TYPES = ("fact", "decision", "insight", "note")
 
-# Weights: a hit in the title matters most, then tags, then body.
-# (Kept explicit so the ranking behaviour is testable.)
+# Ranking weights (explicit so behaviour is testable). Whole-word counts.
 W_TITLE, W_TAGS, W_BODY = 3, 2, 1
 
+_RESERVED = {"con", "prn", "aux", "nul", "clock$"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
+
+# --------------------------------------------------------------------------- #
+# paths
+# --------------------------------------------------------------------------- #
 def _root() -> Path:
     return Path(os.environ.get("ANKORA_DIR", ".ankora"))
 
@@ -45,29 +53,124 @@ def _index_file() -> Path:
     return _root() / "INDEX.md"
 
 
+# --------------------------------------------------------------------------- #
+# helpers: slug, tokens, atomic write, lock
+# --------------------------------------------------------------------------- #
 def _slug(title: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return (s or "anchor")[:60]
+    s = (s or "anchor")[:60]
+    if s.split(".")[0] in _RESERVED:   # Windows device name -> make it a normal file
+        s = "_" + s
+    return s
 
 
-def _parse(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
-    meta: dict[str, str] = {}
-    body = text
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) == 3:
-            body = parts[2].strip()
-            for line in parts[1].strip().splitlines():
-                if ":" in line:
-                    key, val = line.split(":", 1)
-                    meta[key.strip()] = val.strip()
-    tags = [t for t in re.split(r"[,\s]+", meta.get("tags", "").strip("[]")) if t]
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"\w+", text.lower(), re.UNICODE)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write text so a reader always sees the complete old or complete new file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + f".tmp.{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)            # atomic; replaces the dir entry, not a hardlink target
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass                          # directory fsync is best-effort (e.g. Windows)
+
+
+class _Lock:
+    """Cross-process advisory lock via atomic O_EXCL lockfile. Steals stale locks."""
+
+    def __init__(self, path: Path, timeout: float = 10.0, stale: float = 30.0):
+        self.path, self.timeout, self.stale, self.fd = path, timeout, stale, None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        start = time.time()
+        while True:
+            try:
+                self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.path.stat().st_mtime > self.stale:
+                        os.unlink(self.path)
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.time() - start > self.timeout:
+                    raise TimeoutError(f"could not acquire lock {self.path}")
+                time.sleep(0.02)
+
+    def __exit__(self, *exc):
+        try:
+            if self.fd is not None:
+                os.close(self.fd)
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# anchor read / write
+# --------------------------------------------------------------------------- #
+def _fm_value(v):
+    return json.dumps(v, ensure_ascii=False)
+
+
+def _parse(path: Path):
+    """Parse an anchor file. Returns a dict, or None if the file is malformed
+    (never silently manufactures a phantom anchor)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")   # tolerate a BOM
+    except (UnicodeDecodeError, OSError):
+        return None
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return None
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return None
+    meta: dict = {}
+    for line in lines[1:end]:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip()] = v.strip()
+
+    def _decode(raw, default):
+        if raw is None:
+            return default
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return raw.strip("[]") if default == [] else raw   # back-compat plain values
+
+    title = _decode(meta.get("title"), None)
+    if not isinstance(title, str) or not title.strip():
+        return None                                            # require a real title
+    tags = _decode(meta.get("tags"), [])
+    if not isinstance(tags, list):
+        tags = [t for t in re.split(r"[,\s]+", str(tags)) if t]
+    body = "\n".join(lines[end + 1:]).strip()
     return {
-        "path": path,
-        "title": meta.get("title", path.stem),
+        "path": Path(path),
+        "title": title,
         "type": meta.get("type", "note"),
-        "tags": tags,
+        "tags": [str(t) for t in tags],
+        "created": meta.get("created", ""),
         "body": body,
     }
 
@@ -76,56 +179,76 @@ def _all() -> list[dict]:
     d = _anchors_dir()
     if not d.exists():
         return []
-    return [_parse(p) for p in sorted(d.glob("*.md"))]
+    out = []
+    for p in sorted(d.glob("*.md")):
+        a = _parse(p)
+        if a is None:
+            print(f"ankora: skipping malformed anchor {p.name}", file=sys.stderr)
+            continue
+        out.append(a)
+    return out
 
 
 def _resolve_path(name: str, title: str) -> Path:
-    """Pick the file for this anchor. Reuse the file if a same-title anchor
-    already exists (save is an upsert keyed on the title); otherwise avoid
-    clobbering a different anchor that slugs to the same name by suffixing."""
+    """Reuse the file for a same-title anchor (upsert); otherwise suffix so a
+    different anchor that slugs to the same name is never clobbered."""
     d = _anchors_dir()
     i = 1
     while True:
         candidate = d / (f"{name}.md" if i == 1 else f"{name}-{i}.md")
-        if not candidate.exists() or _parse(candidate)["title"] == title:
+        if not candidate.exists():
+            return candidate
+        existing = _parse(candidate)
+        if existing is not None and existing["title"] == title:
             return candidate
         i += 1
 
 
 def save(title: str, type_: str, tags: list[str], body: str) -> Path:
+    title = title if title is not None else ""
+    if not title.strip():
+        raise ValueError("title must not be empty")
+    if any(("\n" in x or "\r" in x) for x in [title, *tags]):
+        raise ValueError("title and tags must not contain newlines")
     _anchors_dir().mkdir(parents=True, exist_ok=True)
-    name = _slug(title)
-    path = _resolve_path(name, title)
-    front = [
-        f"name: {name}",
-        f"title: {title}",
-        f"type: {type_}",
-        f"tags: [{', '.join(tags)}]",
-        f"created: {date.today().isoformat()}",
-    ]
-    path.write_text(
-        "---\n" + "\n".join(front) + "\n---\n\n" + body.strip() + "\n",
-        encoding="utf-8",
-    )
-    rebuild_index()
+    with _Lock(_root() / ".lock"):
+        name = _slug(title)
+        path = _resolve_path(name, title)
+        created = date.today().isoformat()
+        if path.exists():
+            prev = _parse(path)
+            if prev and prev.get("created"):
+                created = prev["created"]                      # preserve original creation date
+        front = [
+            f"name: {path.stem}",
+            f"title: {_fm_value(title)}",
+            f"type: {type_}",
+            f"tags: {_fm_value(list(tags))}",
+            f"created: {created}",
+            f"updated: {date.today().isoformat()}",
+        ]
+        _atomic_write(path, "---\n" + "\n".join(front) + "\n---\n\n" + body.strip() + "\n")
+        _rebuild_index_unlocked()
     return path
 
 
 def recall(query: str, limit: int = 5) -> list[dict]:
-    terms = [t.lower() for t in re.split(r"\s+", query.strip()) if t]
-    scored: list[tuple[int, dict]] = []
+    if limit is not None and limit < 0:
+        raise ValueError("limit must be >= 0")
+    terms = _tokens(query)
+    if not terms:
+        return []
+    scored = []
     for a in _all():
-        title, tags, body = a["title"].lower(), " ".join(a["tags"]).lower(), a["body"].lower()
-        score = 0
-        for t in terms:
-            score += W_TITLE * title.count(t) + W_TAGS * tags.count(t) + W_BODY * body.count(t)
+        tt, tg, tb = _tokens(a["title"]), _tokens(" ".join(a["tags"])), _tokens(a["body"])
+        score = sum(W_TITLE * tt.count(t) + W_TAGS * tg.count(t) + W_BODY * tb.count(t) for t in terms)
         if score > 0:
             scored.append((score, a))
     scored.sort(key=lambda x: (-x[0], x[1]["title"]))
-    return [a for _, a in scored[:limit]]
+    return [a for _, a in scored[:limit]] if limit is not None else [a for _, a in scored]
 
 
-def rebuild_index() -> Path:
+def _rebuild_index_unlocked() -> Path:
     anchors = _all()
     n = len(anchors)
     lines = [
@@ -138,11 +261,18 @@ def rebuild_index() -> Path:
     for a in anchors:
         tags = f" — {', '.join(a['tags'])}" if a["tags"] else ""
         lines.append(f"- **{a['title']}** [{a['type']}]{tags}")
-    _root().mkdir(parents=True, exist_ok=True)
-    _index_file().write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _atomic_write(_index_file(), "\n".join(lines) + "\n")
     return _index_file()
 
 
+def rebuild_index() -> Path:
+    with _Lock(_root() / ".lock"):
+        return _rebuild_index_unlocked()
+
+
+# --------------------------------------------------------------------------- #
+# cli
+# --------------------------------------------------------------------------- #
 def _print_hits(hits: list[dict], query: str) -> None:
     if not hits:
         print(f'no anchors matched: "{query}"')
@@ -154,7 +284,20 @@ def _print_hits(hits: list[dict], query: str) -> None:
         print(a["body"].strip())
 
 
+def _nonneg_int(v: str) -> int:
+    n = int(v)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return n
+
+
 def main(argv=None) -> None:
+    for stream in (sys.stdout, sys.stderr):          # never crash on unicode under CP1251 etc.
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+
     p = argparse.ArgumentParser(prog="ankora", description=__doc__.splitlines()[1])
     p.add_argument("-V", "--version", action="version", version=f"ankora {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -167,7 +310,7 @@ def main(argv=None) -> None:
 
     r = sub.add_parser("recall", help="recall anchors by keyword")
     r.add_argument("query")
-    r.add_argument("-n", "--limit", type=int, default=5)
+    r.add_argument("-n", "--limit", type=_nonneg_int, default=5)
 
     sub.add_parser("index", help="rebuild INDEX.md")
     sub.add_parser("list", help="list all anchors")
@@ -176,8 +319,11 @@ def main(argv=None) -> None:
     if args.cmd == "save":
         tags = [t for t in re.split(r"[,\s]+", args.tags) if t]
         body = args.message or (sys.stdin.read() if not sys.stdin.isatty() else "")
-        path = save(args.title, args.type, tags, body)
-        print(f"saved {path}")
+        try:
+            print(f"saved {save(args.title, args.type, tags, body)}")
+        except ValueError as e:
+            print(f"ankora: {e}", file=sys.stderr)
+            sys.exit(2)
     elif args.cmd == "recall":
         _print_hits(recall(args.query, args.limit), args.query)
     elif args.cmd == "index":

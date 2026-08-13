@@ -34,3 +34,4 @@ Keep each anchor atomic — one claim per note. Do not dump a whole session into
 - The always-loaded surface is `INDEX.md` only. Detail is pulled on demand via `recall`.
 - Prefer many small anchors over one growing file.
 - Don't save secrets, tokens, or credentials into anchors.
+- This skill calls `ankora.py`; keep the engine reachable (copy `ankora.py` into the project, or once installed via pip use the `ankora` command instead). Both the engine and the store honour `ANKORA_DIR`.

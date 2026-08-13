@@ -35,13 +35,15 @@ Anchors live in `./.ankora/anchors/*.md` — plain markdown with a small frontma
 
 Set `ANKORA_DIR` to point it somewhere else (e.g. a shared notes repo).
 
+Writes are atomic and guarded by a lock, so a crash mid-save or two concurrent saves never silently lose an anchor.
+
 ## With Claude Code
 
 Drop `SKILL.md` into your project (or `.claude/skills/`). It tells the agent to run `recall` at the start of a session and `save` when a real decision is made. See `SKILL.md`.
 
 ## What it does NOT do (on purpose)
 
-This is deliberately small. It does **not** do embeddings/semantic search, a graph, auto-consolidation, conflict detection, or ranking beyond keyword frequency. If two notes disagree, both stay — you resolve it. If you outgrow keyword recall, that's when a full memory framework is worth the extra setup. Ankora is the small version that covers most of the value first, with nothing to install.
+This is deliberately small. It does **not** do embeddings/semantic search, a graph, auto-consolidation, conflict detection, or ranking beyond weighted whole-word keyword matching. If two notes disagree, both stay — you resolve it. If you outgrow keyword recall, that's when a full memory framework is worth the extra setup. Ankora is the small version that covers most of the value first, with nothing to install.
 
 ## License
 
