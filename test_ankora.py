@@ -134,10 +134,43 @@ class AnkoraTest(unittest.TestCase):
 
     # --- creation date preserved on upsert (audit #13) ---
     def test_upsert_preserves_created(self):
+        # An anchor created on an EARLIER day: saving both versions today would
+        # pass even with the preserve logic removed, because date.today() is the
+        # same on both writes. Backdate the stored date so the test can only pass
+        # if the original value is really carried over.
         p = ankora.save("Keep date", "note", [], "v1")
         first = ankora._parse(p)["created"]
+        p.write_text(
+            p.read_text(encoding="utf-8").replace(f"created: {first}", "created: 2020-01-01", 1),
+            encoding="utf-8",
+        )
+        self.assertEqual(ankora._parse(p)["created"], "2020-01-01")   # backdate landed
         ankora.save("Keep date", "note", [], "v2")
-        self.assertEqual(ankora._parse(p)["created"], first)
+        self.assertEqual(ankora._parse(p)["created"], "2020-01-01")
+        self.assertIn("v2", p.read_text(encoding="utf-8"))            # and the body did update
+
+    # --- temp file name must stay unpredictable (v0.1.2 fix, previously untested) ---
+    def test_temp_file_name_is_not_predictable(self):
+        # v0.1.2 replaced a predictable temp name with mkstemp so a pre-planted
+        # link at that path could not be written through. Nothing pinned that
+        # fix: reverting it kept the whole suite green. This is the pin —
+        # a canary sitting at the predictable path must survive a save.
+        p = ankora.save("Trap target", "note", [], "v1")
+        trap = Path(str(p) + ".tmp")
+        trap.write_text("CANARY", encoding="utf-8")
+        try:
+            ankora.save("Trap target", "note", [], "v2")
+            self.assertTrue(
+                trap.exists(),
+                "temp name is predictable again — the pre-planted file was consumed by the save",
+            )
+            self.assertEqual(
+                trap.read_text(encoding="utf-8"),
+                "CANARY",
+                "temp name is predictable again — a pre-planted path was written through",
+            )
+        finally:
+            trap.unlink(missing_ok=True)
 
     # --- CRITICAL #2: concurrent saves keep both anchors ---
     def test_concurrent_colliding_saves_keep_both(self):

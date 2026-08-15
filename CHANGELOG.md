@@ -2,6 +2,33 @@
 
 All notable changes to Ankora. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.1.3] — 2026-08-15
+
+Third pass, and the first one aimed at the *tests* rather than the code. Method:
+break one load-bearing thing at a time, demand the responsible test go red, revert,
+demand green. Seven probes; five defences held, two did not.
+
+- **The `created`-preservation test proved vacuous and is now real.** It saved an
+  anchor twice in a row and compared `created` — but both writes happen on the same
+  calendar day, so `date.today()` matched *even with the preserve logic deleted*.
+  Removing `created = prev["created"]` kept it green. The test now backdates the
+  stored anchor to 2020-01-01 before the second save, so it can only pass if the
+  original value is genuinely carried over (and asserts the body still updates).
+- **The v0.1.2 security fix had nothing pinning it.** Reverting the random `mkstemp`
+  temp name back to a predictable `<anchor>.tmp` left all 17 tests green — a future
+  refactor could have quietly reopened the pre-planted-link hole. A canary test now
+  plants a file at the predictable path and requires it to survive a save untouched.
+
+Both new tests were verified in reverse: each was re-run against the corresponding
+broken code and observed to fail with a readable message, then against the intact
+code and observed to pass.
+
+Behaviour and API are unchanged — this release only closes a gap between what the
+suite claimed to protect and what it actually protected.
+
+Known (unchanged): index rebuild is O(n) per save; titles with no ASCII letters
+collapse to a generic slug namespace (suffix-protected, so no loss).
+
 ## [0.1.2] — 2026-08-13
 
 Second hardening pass — self-audit by fault-injection and concurrency execution after the external audit.
