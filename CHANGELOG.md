@@ -2,6 +2,27 @@
 
 All notable changes to Ankora. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.2.0] — 2026-08-22
+
+Installable. Nothing about the tool itself changed — this release is packaging plus
+two documentation fixes found by actually installing it.
+
+- **`pip install ankora-memory`.** A `pyproject.toml` (setuptools, flat single-module
+  layout) exposes `ankora` as a console command, so you no longer have to clone the
+  repo and type `python ankora.py`. Still zero runtime dependencies — the package
+  installs one file and one entry point. The distribution name is `ankora-memory`
+  because `ankora` on PyPI belongs to an unrelated project; the command stays `ankora`.
+- **The README's own recall example returned nothing.** It saved *"Use UUID v7 for
+  ids"* and then ran `recall "id generation"` — but matching is whole-word, so `id`
+  never matches `ids` and `generation` appears nowhere. Copy-pasting the README
+  produced `no anchors matched`, which reads as broken software on first contact.
+  The example is now `recall "uuid ids"`, verified against a real install.
+- **README no longer claims "no `pip install`".** It offers the install first and the
+  clone second, since both now work.
+
+Verified by building the wheel and installing it into a clean virtualenv, then running
+save/recall/index/list through the installed `ankora` command rather than the source tree.
+
 ## [0.1.3] — 2026-08-15
 
 Third pass, and the first one aimed at the *tests* rather than the code. Method:

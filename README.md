@@ -10,7 +10,17 @@ Ankora is the small version of the fix: **one atomic note per fact/decision, a t
 
 ## Install
 
-Needs Python 3.8+. That's it — no `pip install`, nothing to build.
+Needs Python 3.8+ and nothing else — no dependencies to pull in, nothing to build.
+
+```bash
+pip install ankora-memory
+ankora --help
+```
+
+The PyPI name is `ankora-memory` because plain `ankora` was already taken by an
+unrelated project; the command you actually type is still `ankora`.
+
+Or skip the install entirely — it's one file, so you can just run it:
 
 ```bash
 git clone https://github.com/JavaB1/ankora
@@ -22,14 +32,16 @@ python ankora.py --help
 
 ```bash
 # save a decision
-python ankora.py save "Use UUID v7 for ids" -t decision -g db,ids -m "time-ordered, index-friendly, avoids v4 fragmentation"
+ankora save "Use UUID v7 for ids" -t decision -g db,ids -m "time-ordered, index-friendly, avoids v4 fragmentation"
 
 # recall what's relevant to the task at hand
-python ankora.py recall "id generation"
+ankora recall "uuid ids"
 
 # rebuild the index (one line per anchor)
-python ankora.py index
+ankora index
 ```
+
+(Running from a clone instead of an install? Use `python ankora.py ...` — same commands.)
 
 Anchors live in `./.ankora/anchors/*.md` — plain markdown with a small frontmatter block, so they diff cleanly in git and you can read/edit them by hand. `./.ankora/INDEX.md` is the short always-on list.
 

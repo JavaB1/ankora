@@ -12,7 +12,7 @@ Ankora stores atomic notes ("anchors") as markdown and recalls the relevant ones
 1. Read `.ankora/INDEX.md` if it exists — it's the short list of what's remembered.
 2. For the task at hand, pull the detail you need:
    ```
-   python ankora.py recall "<keywords for this task>"
+   ankora recall "<keywords for this task>"
    ```
    Only recall what's relevant. Do not load every anchor.
 
@@ -24,7 +24,7 @@ Save when something is decided or learned that a future session would otherwise 
 - an **insight** / gotcha / thing that bit you.
 
 ```
-python ankora.py save "<one-line claim>" -t decision -g tag1,tag2 -m "<why / detail>"
+ankora save "<one-line claim>" -t decision -g tag1,tag2 -m "<why / detail>"
 ```
 
 Keep each anchor atomic — one claim per note. Do not dump a whole session into one anchor; that recreates the big-file problem Ankora exists to avoid.
@@ -34,4 +34,4 @@ Keep each anchor atomic — one claim per note. Do not dump a whole session into
 - The always-loaded surface is `INDEX.md` only. Detail is pulled on demand via `recall`.
 - Prefer many small anchors over one growing file.
 - Don't save secrets, tokens, or credentials into anchors.
-- This skill calls `ankora.py`; keep the engine reachable (copy `ankora.py` into the project, or once installed via pip use the `ankora` command instead). Both the engine and the store honour `ANKORA_DIR`.
+- This skill calls the `ankora` command (`pip install ankora-memory`). Working from a clone instead? Run `python ankora.py ...` with the same arguments. Both forms honour `ANKORA_DIR`.

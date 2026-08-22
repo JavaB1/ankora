@@ -4,3 +4,8 @@
 # Python
 __pycache__/
 *.pyc
+
+# Packaging artifacts
+dist/
+build/
+*.egg-info/

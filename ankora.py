@@ -29,7 +29,7 @@ import time
 from datetime import date
 from pathlib import Path
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 TYPES = ("fact", "decision", "insight", "note")
 

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ankora-memory"
+dynamic = ["version"]
+description = "Tiny persistent memory for coding agents — save atomic notes as markdown, recall the relevant ones on demand."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "JavaB1" }]
+keywords = ["memory", "agents", "llm", "claude", "notes", "markdown", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+
+[project.urls]
+Homepage = "https://github.com/JavaB1/ankora"
+Repository = "https://github.com/JavaB1/ankora"
+Changelog = "https://github.com/JavaB1/ankora/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ankora = "ankora:main"
+
+[tool.setuptools]
+py-modules = ["ankora"]
+
+[tool.setuptools.dynamic]
+version = { attr = "ankora.__version__" }
