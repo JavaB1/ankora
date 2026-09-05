@@ -1,0 +1,4 @@
+# Windows checkouts with core.autocrlf=true rewrite LF-tracked text files to
+# CRLF, so on-disk bytes stop matching the git blob - invisible in git diff and
+# lethal to strict parsers and hash-pinned fixtures. Pin it repo-wide.
+* text=auto eol=lf
