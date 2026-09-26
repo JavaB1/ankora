@@ -1,0 +1,4 @@
+ALL            n= 45  hit@1=0.55  hit@3=0.68  MRR=0.61  silent@none=0.00 (5 no-answer)
+russian        n= 21  hit@1=0.53  hit@3=0.58  MRR=0.56  silent@none=0.00 (2 no-answer)
+english        n= 19  hit@1=0.75  hit@3=1.00  MRR=0.86  silent@none=0.00 (3 no-answer)
+cross-lang     n=  5  hit@1=0.00  hit@3=0.00  MRR=0.00  silent@none=nan (0 no-answer)

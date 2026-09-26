@@ -1,0 +1,14 @@
+ALL            n= 45  hit@1=0.80  hit@3=0.93  MRR=0.85  silent@none=0.00 (5 no-answer)
+russian        n= 21  hit@1=0.79  hit@3=1.00  MRR=0.88  silent@none=0.00 (2 no-answer)
+english        n= 19  hit@1=1.00  hit@3=1.00  MRR=1.00  silent@none=0.00 (3 no-answer)
+cross-lang     n=  5  hit@1=0.20  hit@3=0.40  MRR=0.27  silent@none=nan (0 no-answer)
+
+misses (answerable, not in top 3) and false alarms (no-answer, returned something):
+  hq09 'можно ли поменяться сменами с коллегой' expected=['h07'] got=['h08', 'h06', 'h18']
+  hq14 'how is the hourly wage calculated' expected=['h14'] got=[]
+  hq18 'уходит ли налоговый отчёт в налоговую автоматически' expected=['h19'] got=['h21', 'h01', 'h11']
+  hq33 'can the bot broadcast an announcement to everyone at once' expected=[] got=['h24', 'h22', 'h25']
+  hq42 'нужна ли двухфакторная аутентификация в админке' expected=[] got=['h38']
+  hq43 'how many weeks of maternity leave does the policy give' expected=[] got=['h24', 'h40', 'h36']
+  hq44 'есть ли отдельное мобильное приложение для начальников цехов, или только бот и веб-панель' expected=[] got=['h38', 'h10', 'h23']
+  hq45 'does the system support more than one factory site' expected=[] got=['h24', 'h26', 'h32']

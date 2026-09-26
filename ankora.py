@@ -20,21 +20,51 @@ concurrent saves never silently lose an anchor.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
+import math
 import os
 import re
 import sys
 import tempfile
 import time
+import unicodedata
 from datetime import date
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 TYPES = ("fact", "decision", "insight", "note")
 
-# Ranking weights (explicit so behaviour is testable). Whole-word counts.
+# Ranking (explicit so behaviour is testable): BM25F. Each field is length-
+# normalised against the average of that field (title, tags, body separately),
+# weighted, summed per word, then saturated once -- so a long body can no longer
+# drown a title match. Words are NFC-normalised, lower-cased, ё folded to е;
+# one-letter leftovers ("s" from "user's") and filler (STOPWORDS) are dropped.
+# A query word matches a note word by form: English by a light stem ("ids" finds
+# "id", "logging" finds "log"), Russian by a shared start -- cut up to three
+# letters but keep at least four (BrainHub's term_prefix, measured 6/12 -> 9/12
+# on case forms), so "ошибки" finds "ошибок" and "запись" finds "записи".
+# The exact word earns EXACT_BONUS on top, so "cors" beats "core" although both
+# stem to "cor". No synonyms, no translation, no embeddings.
 W_TITLE, W_TAGS, W_BODY = 3, 2, 1
+BM25_K1, BM25_B = 1.2, 0.5
+_FIELDS = (("title", W_TITLE, 0.25), ("tags", W_TAGS, 0.25), ("body", W_BODY, BM25_B))
+EXACT_BONUS = 0.5
+# Share of a query's content words a hit must contain (queries of 3+ words).
+# 0 = off: any matching word is enough.
+MIN_MATCH_SHARE = 0.0
+
+STOPWORDS = frozenset("""
+a an and are as at be been but by can do does did for from had has have how i if in into is it
+its me my no not of on or our so than that the their them then there these they this to up us
+was we were what when where which who why will with would you your
+а без бы в во вот все где да для до если есть же за зачем и из или им их к как ко когда кто
+ли мне мы на над не нет но о об от по под почему при про с со так там то тут у уже что чтобы это
+эта эти этот я через после перед между также тоже еще который которая которое которые можно нужно
+""".split())
+
+_CYRILLIC = re.compile(r"[а-яе]")
 
 _RESERVED = {"con", "prn", "aux", "nul", "clock$"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
@@ -66,7 +96,47 @@ def _slug(title: str) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    return re.findall(r"\w+", text.lower(), re.UNICODE)
+    text = unicodedata.normalize("NFC", text).lower().replace("ё", "е")
+    return [t for t in re.findall(r"\w+", text, re.UNICODE) if len(t) > 1]
+
+
+def _undouble(word: str) -> str:
+    return word[:-1] if len(word) > 2 and word[-1] == word[-2] and word[-1] in "bdfgmnprt" else word
+
+
+@functools.lru_cache(maxsize=65536)
+def _stem(word: str) -> str:
+    """Light English stemmer, applied to notes and queries alike."""
+    if len(word) > 4 and word.endswith("sses"):
+        word = word[:-2]
+    elif len(word) > 3 and word.endswith("ies"):
+        word = word[:-3] + "i"                          # policies -> polici, cookies -> cooki
+    elif len(word) > 2 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        word = word[:-1]
+    if word.endswith("eed"):
+        pass                                            # need, exceed: not a past tense
+    elif len(word) > 5 and word.endswith("ing"):
+        word = _undouble(word[:-3])                     # logging -> log, planning -> plan
+    elif len(word) > 5 and word.endswith("ed"):
+        word = _undouble(word[:-2])                     # committed -> commit, verified -> verifi
+    if len(word) > 3 and word.endswith("y") and word[-2] not in "aeiou":
+        word = word[:-1] + "i"                          # policy -> polici, verify -> verifi
+    if len(word) > 4 and word.endswith("e"):
+        word = word[:-1]                                # cache -> cach, cookie -> cooki; core stays
+    return word
+
+
+def _matcher(q: str):
+    """How one query word matches the words of a note."""
+    if not q.isalpha():
+        return lambda w: w == q                         # v7, argon2, 2026: exact only
+    if _CYRILLIC.match(q):
+        if len(q) > 4:
+            start = q[:max(4, len(q) - 3)]
+            return lambda w: w.startswith(start)
+        return lambda w: w == q or (w.startswith(q) and len(w) - len(q) <= 3)   # кэш -> кэшем
+    stem = _stem(q)
+    return lambda w: w == q or (w.isalpha() and not _CYRILLIC.match(w) and _stem(w) == stem)
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -243,15 +313,44 @@ def save(title: str, type_: str, tags: list[str], body: str) -> Path:
 def recall(query: str, limit: int = 5) -> list[dict]:
     if limit is not None and limit < 0:
         raise ValueError("limit must be >= 0")
-    terms = _tokens(query)
-    if not terms:
+    words = list(dict.fromkeys(t for t in _tokens(query) if t not in STOPWORDS))   # distinct, in order
+    if not words:
         return []
-    scored = []
+    docs = []
     for a in _all():
-        tt, tg, tb = _tokens(a["title"]), _tokens(" ".join(a["tags"])), _tokens(a["body"])
-        score = sum(W_TITLE * tt.count(t) + W_TAGS * tg.count(t) + W_BODY * tb.count(t) for t in terms)
-        if score > 0:
-            scored.append((score, a))
+        text = {"title": a["title"], "tags": " ".join(a["tags"]), "body": a["body"]}
+        docs.append((a, {f: [t for t in _tokens(text[f]) if t not in STOPWORDS] for f, _, _ in _FIELDS}))
+    if not docs:
+        return []
+    n = len(docs)
+    avg = {f: (sum(len(d[f]) for _, d in docs) / n) or 1.0 for f, _, _ in _FIELDS}
+
+    def weighted_tf(d, match):
+        return sum(w * sum(1 for t in d[f] if match(t)) / (1 - b + b * len(d[f]) / avg[f])
+                   for f, w, b in _FIELDS)
+
+    def idf(df):
+        return math.log(1 + (n - df + 0.5) / (df + 0.5))
+
+    def saturate(x):
+        return x * (BM25_K1 + 1) / (x + BM25_K1) if x > 0 else 0.0
+
+    # per query word: its weighted tf in every note, by form and by exact word
+    columns = []
+    for q in words:
+        by_form = [weighted_tf(d, _matcher(q)) for _, d in docs]
+        exact = [weighted_tf(d, lambda t, q=q: t == q) for _, d in docs]
+        columns.append((by_form, sum(1 for x in by_form if x), exact, sum(1 for x in exact if x)))
+    need = math.ceil(len(words) * MIN_MATCH_SHARE) if len(words) >= 3 else 1
+    scored = []
+    for i, (a, _) in enumerate(docs):
+        if sum(1 for by_form, *_ in columns if by_form[i]) < max(1, need):
+            continue
+        score = 0.0
+        for by_form, df_form, exact, df_exact in columns:
+            score += idf(df_form) * saturate(by_form[i])
+            score += EXACT_BONUS * idf(df_exact) * saturate(exact[i])
+        scored.append((score, a))
     scored.sort(key=lambda x: (-x[0], x[1]["title"]))
     return [a for _, a in scored[:limit]] if limit is not None else [a for _, a in scored]
 
@@ -305,6 +404,10 @@ def main(argv=None) -> None:
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
         except (AttributeError, ValueError):
             pass
+    try:                                             # a piped body is UTF-8 too, not the console code page
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
     p = argparse.ArgumentParser(prog="ankora", description=__doc__.splitlines()[1])
     p.add_argument("-V", "--version", action="version", version=f"ankora {__version__}")
@@ -333,6 +436,8 @@ def main(argv=None) -> None:
             print(f"ankora: {e}", file=sys.stderr)
             sys.exit(2)
     elif args.cmd == "recall":
+        if args.limit == 0:
+            return                                   # asked for nothing: say nothing, not "no match"
         _print_hits(recall(args.query, args.limit), args.query)
     elif args.cmd == "index":
         print("wrote", rebuild_index())

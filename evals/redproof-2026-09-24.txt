@@ -1,0 +1,28 @@
+[word forms off (exact words only)] sha 449f81931f53->dc07bc2a0f96 | 5 failed, 30 passed in 1.28s
+    red: test_cli_recall_russian_word_form_roundtrip
+    red: test_english_forms_the_first_stemmer_split
+    red: test_recall_matches_english_word_forms
+    red: test_recall_matches_russian_word_forms
+    red: test_russian_forms_the_first_stemmer_split
+[stopwords off] sha 449f81931f53->78ebebfa2570 | 2 failed, 33 passed in 1.25s
+    red: test_filler_only_query_returns_nothing
+    red: test_filler_words_do_not_rank
+[idf off] sha 449f81931f53->1e1126b73dd2 | 1 failed, 34 passed in 1.25s
+    red: test_rare_term_outweighs_common_term
+[length norm off] sha 449f81931f53->25a9ff7d4f31 | 1 failed, 34 passed in 1.24s
+    red: test_shorter_note_wins_on_equal_match
+[per-field length off (whole-note length)] sha 449f81931f53->b347a43599f4 | 1 failed, 34 passed in 1.25s
+    red: test_title_beats_body_even_with_a_long_body
+[title weight off] sha 449f81931f53->cf187fe40116 | 2 failed, 33 passed in 1.24s
+    red: test_recall_ranks_title_over_body
+    red: test_title_beats_body_even_with_a_long_body
+[exact-word bonus off] sha 449f81931f53->e28d41ce52cd | 1 failed, 34 passed in 1.25s
+    red: test_exact_word_breaks_a_stem_tie
+[ё not folded] sha 449f81931f53->d1a9d965f722 | 1 failed, 34 passed in 1.25s
+    red: test_yo_and_ye_are_one_letter
+[no NFC] sha 449f81931f53->df7082b2e0bb | 1 failed, 34 passed in 1.23s
+    red: test_decomposed_unicode_is_normalised
+[one-letter tokens kept] sha 449f81931f53->be15503710af | 1 failed, 34 passed in 1.23s
+    red: test_apostrophe_leftovers_do_not_match
+[stdin not UTF-8] sha 449f81931f53->c7da2664eee0 | 1 failed, 34 passed in 1.25s
+    red: test_cli_save_reads_piped_body_as_utf8

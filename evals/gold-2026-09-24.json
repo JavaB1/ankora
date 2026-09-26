@@ -1,0 +1,904 @@
+{
+  "meta": {
+    "written_by": "blind subagent",
+    "date": "2026-09-24",
+    "note": "Invented a fictional bilingual RU/EN plant-shop backend (Telegram bot, Postgres, Redis, PayGate payments) from scratch without reading ankora.py, then phrased queries the way a developer would actually type them from memory."
+  },
+  "anchors": [
+    {
+      "id": "a01",
+      "title": "JWT access/refresh token rotation",
+      "type": "decision",
+      "tags": [
+        "auth",
+        "jwt",
+        "tokens"
+      ],
+      "body": "Access tokens expire after 15 minutes and refresh tokens after 30 days, rotating on every use. We chose rotation over static refresh tokens so a leaked refresh token stops working as soon as the legitimate client uses its next one."
+    },
+    {
+      "id": "a02",
+      "title": "Password hashing: argon2id over bcrypt",
+      "type": "decision",
+      "tags": [
+        "auth",
+        "passwords",
+        "security"
+      ],
+      "body": "New passwords are hashed with argon2id (m=19MB, t=2, p=1) instead of bcrypt. Argon2id resists GPU cracking better and is the current OWASP-recommended default; a handful of legacy admin accounts stay on bcrypt until they next reset their password."
+    },
+    {
+      "id": "a03",
+      "title": "Проверка подписи Telegram Login Widget",
+      "type": "insight",
+      "tags": [
+        "auth",
+        "telegram",
+        "gotcha"
+      ],
+      "body": "Хэш от Telegram Login Widget нужно считать по полям, отсортированным по алфавиту и склеенным через символ новой строки, а не в порядке прихода в query string — иначе подпись не сходится примерно у 1 из 20 пользователей с заполненным username. Секретный ключ для HMAC — это sha256 от токена бота, а не сам токен."
+    },
+    {
+      "id": "a04",
+      "title": "Admin panel requires 2FA after incident",
+      "type": "decision",
+      "tags": [
+        "auth",
+        "admin",
+        "2fa",
+        "security"
+      ],
+      "body": "After an admin account was accessed in March using a reused password, TOTP-based two-factor auth became mandatory for every admin panel account, with no exception for temporary contractor logins."
+    },
+    {
+      "id": "a05",
+      "title": "Redis caches product catalog listing",
+      "type": "fact",
+      "tags": [
+        "cache",
+        "redis",
+        "catalog"
+      ],
+      "body": "The product listing endpoint caches its serialized JSON response in Redis under a key that includes category and page number, with a 10 minute TTL. The cache is populated lazily on first request, not warmed on deploy."
+    },
+    {
+      "id": "a06",
+      "title": "Баг: кэш каталога не сбрасывался при смене цены",
+      "type": "insight",
+      "tags": [
+        "cache",
+        "redis",
+        "bug",
+        "catalog"
+      ],
+      "body": "Админка меняла цену товара напрямую в Postgres, но не сбрасывала связанные ключи каталога в Redis — покупатели видели старую цену до 10 минут. Починили: любое изменение цены теперь публикует событие price_changed, которое слушает воркер и чистит нужные ключи по паттерну."
+    },
+    {
+      "id": "a07",
+      "title": "Separate Redis logical DBs for sessions and rate limiting",
+      "type": "decision",
+      "tags": [
+        "redis",
+        "sessions",
+        "rate-limit"
+      ],
+      "body": "Sessions live in Redis DB 0, rate-limit counters in DB 1, and bot conversation state in DB 2. Keeping them apart means rate-limit counters can be flushed during debugging without touching anyone's active session."
+    },
+    {
+      "id": "a08",
+      "title": "PayGate chosen as payment provider",
+      "type": "decision",
+      "tags": [
+        "payments",
+        "provider",
+        "paygate"
+      ],
+      "body": "PayGate was picked over the two other quoted providers mainly for local card coverage and same-day payout, even though its API is clunkier than the alternatives. The share of cards it doesn't support turned out to be under 2% in testing."
+    },
+    {
+      "id": "a09",
+      "title": "PayGate webhook idempotency key",
+      "type": "fact",
+      "tags": [
+        "payments",
+        "webhook",
+        "idempotency"
+      ],
+      "body": "PayGate can and does deliver the same payment webhook more than once, especially during retry storms. We dedupe on its event id header, stored in a processed_webhooks table with a unique constraint, and treat a duplicate as a no-op success response rather than an error."
+    },
+    {
+      "id": "a10",
+      "title": "Возвраты проходят через ручное подтверждение админа",
+      "type": "decision",
+      "tags": [
+        "payments",
+        "refund",
+        "admin"
+      ],
+      "body": "Автоматических возвратов нет: оператор в админке видит заявку на возврат, проверяет статус заказа и подтверждает вручную, после чего запрос уходит в PayGate. Решение осознанное — слишком много спорных случаев (частично доставленный заказ, повреждённая упаковка) для полной автоматизации."
+    },
+    {
+      "id": "a11",
+      "title": "Money stored as integer cents",
+      "type": "decision",
+      "tags": [
+        "payments",
+        "money",
+        "database"
+      ],
+      "body": "All monetary amounts are stored as integers in the smallest currency unit, never as float or decimal. This avoids rounding drift when summing line items; conversion to a display format happens only at the API or UI boundary."
+    },
+    {
+      "id": "a12",
+      "title": "Failed payment retry backoff",
+      "type": "fact",
+      "tags": [
+        "payments",
+        "retry",
+        "jobs"
+      ],
+      "body": "A failed payment charge is retried at 1 minute, 5 minutes, 30 minutes and 4 hours, then gives up and marks the order payment_failed for manual follow-up. The backoff schedule lives in a config file, not hardcoded in the worker."
+    },
+    {
+      "id": "a13",
+      "title": "Предоплата обязательна для крупных заказов",
+      "type": "decision",
+      "tags": [
+        "payments",
+        "prepayment",
+        "orders"
+      ],
+      "body": "Для заказов дороже установленного порога (сейчас 2 000 000 в минимальных денежных единицах) требуем 100% предоплату вместо оплаты при получении — курьеры несколько раз возвращались с крупными заказами, которые никто не забирал. Порог настраивается в админке, не зашит в код."
+    },
+    {
+      "id": "a14",
+      "title": "PgBouncer transaction pooling breaks prepared statements",
+      "type": "insight",
+      "tags": [
+        "database",
+        "postgres",
+        "pgbouncer",
+        "gotcha"
+      ],
+      "body": "With PgBouncer in transaction pooling mode, server-side prepared statements from the ORM caused 'prepared statement already exists' errors under load, because a statement prepared on one backend connection could get reused on a different one. Fixed by disabling statement caching in the driver config."
+    },
+    {
+      "id": "a15",
+      "title": "Migration tool: node-pg-migrate",
+      "type": "decision",
+      "tags": [
+        "database",
+        "migrations",
+        "tooling"
+      ],
+      "body": "We use node-pg-migrate with plain SQL migration files instead of an ORM's built-in migration DSL, so migrations stay readable and reviewable in a PR without learning a second query language. Every migration must ship a working down step."
+    },
+    {
+      "id": "a16",
+      "title": "Ночной бэкап Postgres в удалённое хранилище",
+      "type": "fact",
+      "tags": [
+        "database",
+        "backup",
+        "postgres"
+      ],
+      "body": "Каждую ночь в 03:00 по серверному времени (UTC) pg_dump льёт полный дамп в объектное хранилище с хранением 14 последних копий. Восстановление тестировали вручную — полный цикл на копии базы занял около 20 минут."
+    },
+    {
+      "id": "a17",
+      "title": "Missing index on orders.created_at slowed admin dashboard",
+      "type": "insight",
+      "tags": [
+        "database",
+        "performance",
+        "orders",
+        "index"
+      ],
+      "body": "The admin dashboard's 'orders this week' widget was doing a sequential scan over the whole orders table because nothing indexed created_at. Adding a plain btree index took the query from about 2.3 seconds to under 15 milliseconds."
+    },
+    {
+      "id": "a18",
+      "title": "N+1 запросы на эндпоинте деталей заказа",
+      "type": "insight",
+      "tags": [
+        "database",
+        "performance",
+        "orders",
+        "n-plus-one"
+      ],
+      "body": "Эндпоинт с деталями заказа делал отдельный SELECT на каждую позицию, чтобы подтянуть карточку товара — на заказе из 30 позиций это 31 запрос. Заменили на один JOIN с товарами, ответ ускорился с примерно 400мс до 40мс на тестовых данных."
+    },
+    {
+      "id": "a19",
+      "title": "Soft-delete pattern for products",
+      "type": "decision",
+      "tags": [
+        "database",
+        "products",
+        "soft-delete"
+      ],
+      "body": "Products are never hard-deleted; a deleted_at timestamp marks them hidden from the catalog while preserving referential integrity for historical orders that still reference them. All product queries go through a repository helper that filters it out by default."
+    },
+    {
+      "id": "a20",
+      "title": "Telegram bot uses webhook, not long polling",
+      "type": "decision",
+      "tags": [
+        "telegram",
+        "bot",
+        "webhook"
+      ],
+      "body": "The bot receives updates via a webhook on a secret URL path rather than long polling, since a web server was already running and webhook mode avoids an extra always-on polling process. The secret path segment gets rotated if it ever leaks into logs."
+    },
+    {
+      "id": "a21",
+      "title": "Лимит Telegram Bot API: 30 сообщений в секунду",
+      "type": "fact",
+      "tags": [
+        "telegram",
+        "bot",
+        "rate-limit"
+      ],
+      "body": "Telegram ограничивает исходящие сообщения примерно 30 в секунду глобально для бота и около 1 в секунду в один и тот же чат. Превышение даёт ошибку 429 с полем retry_after, которое обязательно нужно уважать, иначе бан затягивается ещё дольше."
+    },
+    {
+      "id": "a22",
+      "title": "Broadcast messages go through a queue",
+      "type": "decision",
+      "tags": [
+        "telegram",
+        "bot",
+        "queue",
+        "broadcast"
+      ],
+      "body": "Marketing broadcast messages to all subscribed users are pushed into a job queue and drained at a fixed rate under Telegram's per-chat and global limits, instead of being sent in a tight loop. This replaced an earlier version that got the bot rate-limited for 10 minutes during a promo."
+    },
+    {
+      "id": "a23",
+      "title": "Структура команд бота: middleware-слои",
+      "type": "note",
+      "tags": [
+        "telegram",
+        "bot",
+        "architecture"
+      ],
+      "body": "Обработка команд идёт через цепочку middleware: логирование, проверка бана, парсинг команды, хендлер. Порядок трогать осторожно — проверка бана обязана стоять до хендлера, иначе забаненный пользователь всё равно достучится до логики заказа."
+    },
+    {
+      "id": "a24",
+      "title": "Bot conversation state stored in Redis with TTL",
+      "type": "fact",
+      "tags": [
+        "telegram",
+        "bot",
+        "redis",
+        "state"
+      ],
+      "body": "Multi-step conversations like the checkout flow keep their state in Redis with a 20 minute TTL, so an abandoned conversation resets itself instead of leaving the user stuck mid-flow forever."
+    },
+    {
+      "id": "a25",
+      "title": "CI pipeline runs on GitHub Actions",
+      "type": "fact",
+      "tags": [
+        "ci",
+        "github-actions",
+        "testing"
+      ],
+      "body": "Every push runs lint, unit tests, and a Postgres-backed integration suite in GitHub Actions, with Postgres and Redis started as service containers for the integration job. A merge to main is blocked if any job is red."
+    },
+    {
+      "id": "a26",
+      "title": "Деплой-скрипт: rsync и рестарт systemd",
+      "type": "note",
+      "tags": [
+        "deploy",
+        "script",
+        "systemd"
+      ],
+      "body": "deploy.sh собирает билд локально, льёт файлы на сервер через rsync, исключая node_modules и .env, затем по SSH делает systemctl restart для сервиса. Зависимости на сервере ставятся отдельным шагом уже после rsync."
+    },
+    {
+      "id": "a27",
+      "title": "Rollback procedure keeps last 3 releases",
+      "type": "decision",
+      "tags": [
+        "deploy",
+        "rollback"
+      ],
+      "body": "Each deploy is unpacked into a timestamped releases directory on the server with a current symlink swapped atomically; the last 3 releases are kept so a rollback script can re-point the symlink and restart without a full redeploy."
+    },
+    {
+      "id": "a28",
+      "title": "Переменные окружения: .env плюс vault, никогда не коммитим",
+      "type": "decision",
+      "tags": [
+        "deploy",
+        "env",
+        "secrets"
+      ],
+      "body": "Секреты (ключи платёжного провайдера, токен бота, пароль БД) лежат в .env на сервере и дублируются в vault на случай потери сервера. .env добавлен в .gitignore с первого коммита репозитория, .env.example держим актуальным вручную при каждом новом ключе."
+    },
+    {
+      "id": "a29",
+      "title": "Docker compose separates staging and prod configs",
+      "type": "fact",
+      "tags": [
+        "deploy",
+        "docker",
+        "staging",
+        "prod"
+      ],
+      "body": "A staging compose file and a prod compose file share a base file via the extends mechanism, differing mainly in resource limits and the Postgres volume mount. Staging uses PayGate sandbox credentials, never live ones."
+    },
+    {
+      "id": "a30",
+      "title": "Zero-downtime deploy requires backward-compatible migrations",
+      "type": "insight",
+      "tags": [
+        "deploy",
+        "migrations",
+        "zero-downtime",
+        "gotcha"
+      ],
+      "body": "Because old and new app instances run side by side for a few seconds during a rolling restart, a migration that drops or renames a column the old code still reads will 500 some requests during that window. Rule of thumb: add the column, deploy, backfill, deploy again, only then drop the old column."
+    },
+    {
+      "id": "a31",
+      "title": "Structured JSON logging",
+      "type": "decision",
+      "tags": [
+        "logging",
+        "observability"
+      ],
+      "body": "All services log structured JSON lines with level, message, request id and user id fields to stdout instead of formatted text, so the log shipper can parse fields without regex. The request id is generated at the edge and threaded through every downstream call."
+    },
+    {
+      "id": "a32",
+      "title": "ErrorHub для трекинга ошибок",
+      "type": "fact",
+      "tags": [
+        "monitoring",
+        "errors",
+        "errorhub"
+      ],
+      "body": "Необработанные исключения на бэкенде и в боте улетают в ErrorHub с тегами service и env. На стейджинге алерты в чат отключены — там слишком много ожидаемых ошибок от тестовых данных."
+    },
+    {
+      "id": "a33",
+      "title": "Alert on 3 consecutive failed payments",
+      "type": "decision",
+      "tags": [
+        "monitoring",
+        "alerts",
+        "payments"
+      ],
+      "body": "If the same user has 3 consecutive failed payment attempts within 30 minutes, an alert fires to the on-call channel. This usually means a card issue on their side, but it has also caught sandbox and production credential mixups within minutes instead of a day later."
+    },
+    {
+      "id": "a34",
+      "title": "All timestamps stored in UTC",
+      "type": "decision",
+      "tags": [
+        "database",
+        "timezone",
+        "dates"
+      ],
+      "body": "Every timestamp column is stored as UTC; conversion to the store's local timezone (UTC+5) happens only in the API response formatter or the bot's message templates, never in the database layer."
+    },
+    {
+      "id": "a35",
+      "title": "Пагинация: курсор вместо offset",
+      "type": "insight",
+      "tags": [
+        "database",
+        "pagination",
+        "performance"
+      ],
+      "body": "На больших страницах каталога OFFSET на несколько тысяч строк заставлял Postgres пересчитывать и отбрасывать их на каждый запрос. Перешли на курсорную пагинацию по дате создания и id — время ответа стало постоянным независимо от глубины страницы."
+    },
+    {
+      "id": "a36",
+      "title": "Product search uses Postgres full-text index",
+      "type": "fact",
+      "tags": [
+        "search",
+        "postgres",
+        "catalog"
+      ],
+      "body": "Product search runs on a generated tsvector column combining name and description, indexed with GIN, rather than a separate search service. This was a deliberate scope cut, fine under 20 thousand products, worth revisiting if the catalog grows 10x."
+    },
+    {
+      "id": "a37",
+      "title": "Product images uploaded to an object storage bucket",
+      "type": "fact",
+      "tags": [
+        "storage",
+        "images"
+      ],
+      "body": "Product images are uploaded directly from the admin panel to an object storage bucket via a pre-signed URL, then a thumbnail worker generates three sizes and writes their keys back to the product row. The original upload is never served directly to end users."
+    },
+    {
+      "id": "a38",
+      "title": "Email-уведомления через транзакционного провайдера",
+      "type": "fact",
+      "tags": [
+        "email",
+        "notifications"
+      ],
+      "body": "Письма о заказе (подтверждение, отгрузка, возврат) уходят через транзакционного email-провайдера, а не через свой SMTP — самодельная отправка раньше улетала в спам примерно у трети получателей на одном крупном бесплатном почтовом сервисе."
+    },
+    {
+      "id": "a39",
+      "title": "API gateway rate limit: 100 req/min per IP",
+      "type": "decision",
+      "tags": [
+        "api",
+        "rate-limit",
+        "security"
+      ],
+      "body": "The public API is rate-limited to 100 requests per minute per IP at the gateway level, with a separate higher limit for authenticated requests keyed by user id instead of IP. Limits are configurable per route, not global."
+    },
+    {
+      "id": "a40",
+      "title": "CORS: список разрешённых origin для админки",
+      "type": "insight",
+      "tags": [
+        "cors",
+        "admin",
+        "gotcha"
+      ],
+      "body": "Админка перестала достучаться до API после переезда на новый поддомен — origin не был добавлен в белый список CORS, а браузер молча глотает ошибку без внятного сообщения до открытия вкладки Network. Список origin теперь держим в переменной окружения, а не в коде."
+    },
+    {
+      "id": "a41",
+      "title": "Handling user data deletion requests",
+      "type": "note",
+      "tags": [
+        "privacy",
+        "data-deletion",
+        "compliance"
+      ],
+      "body": "When a user requests account deletion, personal fields like name, phone and address are overwritten with placeholders and the account is disabled, but order rows are kept for accounting records with the user reference anonymized. Full hard-delete is not offered, only anonymization."
+    },
+    {
+      "id": "a42",
+      "title": "Test fixtures use factory functions",
+      "type": "decision",
+      "tags": [
+        "testing",
+        "fixtures"
+      ],
+      "body": "Test data is built with factory functions that accept overrides, instead of static JSON fixture files, so a test can express exactly the one field it cares about without duplicating a whole fixture per scenario."
+    },
+    {
+      "id": "a43",
+      "title": "Feature-флаги в таблице конфигов",
+      "type": "decision",
+      "tags": [
+        "feature-flags",
+        "config"
+      ],
+      "body": "Флаги фич лежат в отдельной таблице (ключ, процент раскатки, whitelist пользователей) и проверяются на каждый запрос через сервис с кэшем на 30 секунд, а не через переменные окружения — так можно включать фичу конкретным пользователям без редеплоя."
+    },
+    {
+      "id": "a44",
+      "title": "Inventory stock sync job runs every 5 minutes",
+      "type": "fact",
+      "tags": [
+        "inventory",
+        "jobs",
+        "sync"
+      ],
+      "body": "A background job reconciles stock counts between the warehouse export and the product stock column every 5 minutes, flagging any product where the difference is more than 10 units for manual review instead of auto-applying large jumps."
+    },
+    {
+      "id": "a45",
+      "title": "Cart abandonment reminder sent after 2 hours",
+      "type": "fact",
+      "tags": [
+        "bot",
+        "cart",
+        "reminder"
+      ],
+      "body": "If a cart has items but no order was placed, the bot sends a single reminder message 2 hours later, never more than once per cart. This is deliberately a single nudge, not a drip campaign — a 3-message version tested worse in feedback."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q01",
+      "q": "how long until an access token expires",
+      "expected": [
+        "a01"
+      ],
+      "why": "asks token lifetime, stated directly in the anchor"
+    },
+    {
+      "id": "q02",
+      "q": "what's our authentication approach overall?",
+      "expected": [
+        "a01",
+        "a02"
+      ],
+      "why": "broad auth question matches the two core mechanism notes; telegram widget and 2fa are narrower special cases"
+    },
+    {
+      "id": "q03",
+      "q": "как проверяется подпись Telegram Login Widget",
+      "expected": [
+        "a03"
+      ],
+      "why": "direct match, different verb form (проверяется vs Проверка)"
+    },
+    {
+      "id": "q04",
+      "q": "2fa admin panel required",
+      "expected": [
+        "a04"
+      ],
+      "why": "keyword match on 2FA requirement for admins"
+    },
+    {
+      "id": "q05",
+      "q": "how does redis caching work in this project",
+      "expected": [
+        "a05",
+        "a07"
+      ],
+      "why": "general caching/redis architecture question matches both setup notes, not the specific bug note a06"
+    },
+    {
+      "id": "q06",
+      "q": "почему кэш каталога не обновился после смены цены",
+      "expected": [
+        "a06"
+      ],
+      "why": "direct match to the cache invalidation bug"
+    },
+    {
+      "id": "q07",
+      "q": "why paygate",
+      "expected": [
+        "a08"
+      ],
+      "why": "short keyword form of the provider choice note"
+    },
+    {
+      "id": "q08",
+      "q": "do we handle duplicate payment webhooks?",
+      "expected": [
+        "a09"
+      ],
+      "why": "different verb form (handle vs handling) for the idempotency note"
+    },
+    {
+      "id": "q09",
+      "q": "как оформить возврат покупателю",
+      "expected": [
+        "a10"
+      ],
+      "why": "different verb form (оформить vs проходят) for the refund note"
+    },
+    {
+      "id": "q10",
+      "q": "prices stored as cents or decimal",
+      "expected": [
+        "a11"
+      ],
+      "why": "keyword match on money storage decision"
+    },
+    {
+      "id": "q11",
+      "q": "what happens when a card charge fails",
+      "expected": [
+        "a12",
+        "a33"
+      ],
+      "why": "retry backoff is the direct mechanical answer; repeated failures also trigger an alert, both plausible"
+    },
+    {
+      "id": "q12",
+      "q": "pgbouncer prepared statement error",
+      "expected": [
+        "a14"
+      ],
+      "why": "near-exact keyword match to the gotcha title"
+    },
+    {
+      "id": "q13",
+      "q": "which migration tool do we use?",
+      "expected": [
+        "a15"
+      ],
+      "why": "direct match, singular tool question vs plural migrations in the note"
+    },
+    {
+      "id": "q14",
+      "q": "как часто бэкап базы",
+      "expected": [
+        "a16"
+      ],
+      "why": "different word form (бэкап базы vs Ночной бэкап Postgres)"
+    },
+    {
+      "id": "q15",
+      "q": "are slow queries on orders a known issue?",
+      "expected": [
+        "a17",
+        "a18"
+      ],
+      "why": "general 'slow orders queries' question matches both known performance fixes"
+    },
+    {
+      "id": "q16",
+      "q": "soft delete products",
+      "expected": [
+        "a19"
+      ],
+      "why": "keyword match on the soft-delete decision"
+    },
+    {
+      "id": "q17",
+      "q": "does the bot use webhooks or polling",
+      "expected": [
+        "a20"
+      ],
+      "why": "different word order/form than the anchor title"
+    },
+    {
+      "id": "q18",
+      "q": "как рассылка не словила бан от телеграма",
+      "expected": [
+        "a22",
+        "a21"
+      ],
+      "why": "asks how broadcast avoids a ban (the queue decision); the rate-limit fact is the closely related reason why"
+    },
+    {
+      "id": "q19",
+      "q": "порядок middleware команд бота",
+      "expected": [
+        "a23"
+      ],
+      "why": "keyword match, dropped preposition natural in search"
+    },
+    {
+      "id": "q20",
+      "q": "how long does the bot remember conversation state",
+      "expected": [
+        "a24"
+      ],
+      "why": "different verb form (remember vs stored) for the ttl fact"
+    },
+    {
+      "id": "q21",
+      "q": "ci integration tests postgres",
+      "expected": [
+        "a25"
+      ],
+      "why": "keyword match on the CI pipeline fact"
+    },
+    {
+      "id": "q22",
+      "q": "как происходит деплой на сервер",
+      "expected": [
+        "a26"
+      ],
+      "why": "different verb form (происходит vs скрипт) for the deploy note"
+    },
+    {
+      "id": "q23",
+      "q": "how do we roll back a bad deploy?",
+      "expected": [
+        "a27"
+      ],
+      "why": "different verb form (roll back vs rollback) for the rollback decision"
+    },
+    {
+      "id": "q24",
+      "q": "где хранятся секреты и токены",
+      "expected": [
+        "a28"
+      ],
+      "why": "direct match on the secrets storage decision"
+    },
+    {
+      "id": "q25",
+      "q": "difference between staging and prod docker compose",
+      "expected": [
+        "a29"
+      ],
+      "why": "direct match on the compose file split fact"
+    },
+    {
+      "id": "q26",
+      "q": "can a migration break a rolling deploy?",
+      "expected": [
+        "a30"
+      ],
+      "why": "different verb form (break vs breaks) for the zero-downtime gotcha"
+    },
+    {
+      "id": "q27",
+      "q": "log format json",
+      "expected": [
+        "a31"
+      ],
+      "why": "keyword match on the structured logging decision"
+    },
+    {
+      "id": "q28",
+      "q": "куда падают необработанные ошибки",
+      "expected": [
+        "a32"
+      ],
+      "why": "different phrasing (куда падают vs улетают) for the error tracking fact"
+    },
+    {
+      "id": "q29",
+      "q": "do we alert on repeated failed payments?",
+      "expected": [
+        "a33"
+      ],
+      "why": "different verb form (alert vs alerting) for the payment alert decision"
+    },
+    {
+      "id": "q30",
+      "q": "timestamps utc or local time",
+      "expected": [
+        "a34"
+      ],
+      "why": "keyword match on the UTC storage decision"
+    },
+    {
+      "id": "q31",
+      "q": "почему пагинация тормозит на дальних страницах",
+      "expected": [
+        "a35"
+      ],
+      "why": "different word (тормозит vs заставлял пересчитывать) for the pagination insight"
+    },
+    {
+      "id": "q32",
+      "q": "product search implementation",
+      "expected": [
+        "a36"
+      ],
+      "why": "keyword match on the full-text search fact"
+    },
+    {
+      "id": "q33",
+      "q": "where are product photos stored?",
+      "expected": [
+        "a37"
+      ],
+      "why": "different word (photos vs images) for the image storage fact"
+    },
+    {
+      "id": "q34",
+      "q": "письма уходят в спам",
+      "expected": [
+        "a38"
+      ],
+      "why": "keyword match on the email deliverability fact"
+    },
+    {
+      "id": "q35",
+      "q": "what's the api rate limit per ip?",
+      "expected": [
+        "a39"
+      ],
+      "why": "direct match on the gateway rate limit decision"
+    },
+    {
+      "id": "q36",
+      "q": "админка не может достучаться до api после переезда на новый домен",
+      "expected": [
+        "a40"
+      ],
+      "why": "different phrasing (не может достучаться vs перестала достучаться, домен vs поддомен) for the CORS gotcha"
+    },
+    {
+      "id": "q37",
+      "q": "test data factories",
+      "expected": [
+        "a42"
+      ],
+      "why": "keyword match on the fixture decision"
+    },
+    {
+      "id": "q38",
+      "q": "как включить фичу только для части пользователей",
+      "expected": [
+        "a43"
+      ],
+      "why": "different phrasing (включить vs проверяются) for the feature flag decision"
+    },
+    {
+      "id": "q39",
+      "q": "how often does stock get resynced",
+      "expected": [
+        "a44"
+      ],
+      "why": "different word form (resynced vs sync) for the inventory job fact"
+    },
+    {
+      "id": "q40",
+      "q": "does the bot remind about abandoned carts?",
+      "expected": [
+        "a45"
+      ],
+      "why": "different word form (remind vs reminder) for the cart abandonment fact"
+    },
+    {
+      "id": "q41",
+      "q": "почему используем argon2 а не bcrypt для паролей",
+      "expected": [
+        "a02"
+      ],
+      "why": "cross-language"
+    },
+    {
+      "id": "q42",
+      "q": "why didn't the catalog cache clear after a price change",
+      "expected": [
+        "a06"
+      ],
+      "why": "cross-language"
+    },
+    {
+      "id": "q43",
+      "q": "почему медленно грузится дашборд с заказами",
+      "expected": [
+        "a17"
+      ],
+      "why": "cross-language"
+    },
+    {
+      "id": "q44",
+      "q": "when is prepayment required for large orders",
+      "expected": [
+        "a13"
+      ],
+      "why": "cross-language"
+    },
+    {
+      "id": "q45",
+      "q": "как удалить персональные данные пользователя по запросу",
+      "expected": [
+        "a41"
+      ],
+      "why": "cross-language"
+    },
+    {
+      "id": "q46",
+      "q": "kubernetes deployment config",
+      "expected": [],
+      "why": "project deploys via rsync/systemd and docker compose, no kubernetes anywhere"
+    },
+    {
+      "id": "q47",
+      "q": "реферальная программа для постоянных покупателей",
+      "expected": [],
+      "why": "no referral or loyalty program exists in this project"
+    },
+    {
+      "id": "q48",
+      "q": "graphql api schema",
+      "expected": [],
+      "why": "project has no graphql layer, only a rate-limited rest api"
+    },
+    {
+      "id": "q49",
+      "q": "loyalty points program rules",
+      "expected": [],
+      "why": "no loyalty points feature exists"
+    },
+    {
+      "id": "q50",
+      "q": "вход через google oauth",
+      "expected": [],
+      "why": "only telegram login widget and jwt/password auth exist, no google oauth anywhere - deliberate near-miss"
+    }
+  ]
+}

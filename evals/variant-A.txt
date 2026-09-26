@@ -1,0 +1,13 @@
+ALL            n= 50  hit@1=0.87  hit@3=0.93  MRR=0.90  silent@none=0.20 (5 no-answer)
+russian        n= 15  hit@1=1.00  hit@3=1.00  MRR=1.00  silent@none=0.50 (2 no-answer)
+english        n= 30  hit@1=0.89  hit@3=0.96  MRR=0.92  silent@none=0.00 (3 no-answer)
+cross-lang     n=  5  hit@1=0.40  hit@3=0.60  MRR=0.50  silent@none=nan (0 no-answer)
+
+misses (answerable, not in top 3) and false alarms (no-answer, returned something):
+  q02 "what's our authentication approach overall?" expected=['a01', 'a02'] got=[]
+  q43 'почему медленно грузится дашборд с заказами' expected=['a17'] got=['a13', 'a18', 'a10']
+  q45 'как удалить персональные данные пользователя по запросу' expected=['a41'] got=['a18', 'a43', 'a16']
+  q46 'kubernetes deployment config' expected=[] got=['a43', 'a12', 'a29']
+  q47 'реферальная программа для постоянных покупателей' expected=[] got=['a35', 'a06']
+  q48 'graphql api schema' expected=[] got=['a39', 'a21', 'a34']
+  q49 'loyalty points program rules' expected=[] got=['a27', 'a30']

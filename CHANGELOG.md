@@ -2,6 +2,48 @@
 
 All notable changes to Ankora. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.3.0] — 2026-09-24
+
+Recall got better at finding the note you meant. Storage, file format and commands
+are unchanged; only how `recall` matches and ranks.
+
+- **Word forms match.** English words go through a light stemmer applied to notes
+  and queries alike (`ids` → `id`, `logging` → `log`, `committed` → `commit`,
+  `cookies` → `cookie`). Russian words match by their start: the query word is cut
+  by up to three letters but kept at least four long, so `ошибки` finds `ошибок` and
+  `запись` finds `записи` (the same trick BrainHub measured at 6/12 → 9/12 on case
+  forms). `ё` folds to `е`; text is NFC-normalised, so a `й` typed as two code
+  points behaves like one.
+- **Ranking is BM25F.** Title, tags and body are length-normalised against their
+  own averages, weighted 3 / 2 / 1 and saturated once, so a long body can no longer
+  drown a title match. A rare query word outweighs a common one, a short note beats
+  a long one on the same single mention, and the exact word you typed earns a bonus
+  over a look-alike that shares its stem (`cors` vs `core`, `plan` vs `plane`).
+  Filler words (`the`, `and`, `как`, `через`, ...) and one-letter leftovers such as
+  the `s` of `user's` are ignored; a query made only of them returns nothing.
+- **CLI.** A body piped to `ankora save` is read as UTF-8 (it was read in the console
+  code page, which turned Russian text into mojibake on Windows). `recall -n 0`
+  prints nothing instead of "no anchors matched".
+- **Measured on a held-out set.** `evals/gold-holdout-2026-09-24.json`: 45 bilingual
+  queries against 40 notes, written by a separate agent that never saw the code, and
+  scored once at the end. Right note first: 55% → 80%; top 3: 68% → 93%; Russian
+  queries first: 53% → 79%. A first draft scored 85% first; the review fixes below
+  cost about two Russian queries at rank 1 and were kept. The earlier set
+  (`gold-2026-09-24.json`) was used during development, so its numbers are not
+  independent: 62% → 87% first.
+- **Found by review, fixed, pinned.** An adversarial review of the first draft found
+  a long body drowning a title match, stem collisions (`cors`/`core`), split forms
+  (`cookie`/`cookies`, `запись`/`записи`, `система`/`систем`), unfolded `ё`, NFD text,
+  apostrophe leftovers and the stdin encoding. Each has a test that failed first.
+- **Known gap.** For queries with no relevant note, recall still returns the closest
+  weak matches (0 of 5 came back empty on the held-out set). A stricter rule (a hit
+  must contain half of the query's words) silenced them but lost a fifth of the right
+  answers on the first set, so it ships off (`MIN_MATCH_SHARE = 0.0`).
+- **Every ranking rule is pinned.** Removing the word-form matching, stopwords, IDF,
+  length normalisation, per-field length, the title weight, the exact-word bonus,
+  `ё` folding, NFC, the one-letter drop or the UTF-8 stdin each turns its own test
+  red (checked on copies of the file, `evals/redproof-2026-09-24.txt`).
+
 ## [0.2.0] — 2026-08-22
 
 Installable. Nothing about the tool itself changed — this release is packaging plus
